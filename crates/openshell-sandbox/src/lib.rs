@@ -547,11 +547,13 @@ pub async fn run_sandbox(
                 Some(ns)
             }
             Err(e) => {
-                return Err(miette::miette!(
-                    "Network namespace creation failed and proxy mode requires isolation. \
-                     Ensure CAP_NET_ADMIN and CAP_SYS_ADMIN are available and iproute2 is installed. \
-                     Error: {e}"
-                ));
+                // Degraded: kernel refused unshare(CLONE_NEWNET) (e.g. gVisor or
+                // missing CAP_NET_ADMIN). Fall back to proxy-env-only enforcement on
+                // loopback. Egress is NOT bypass-proof in this mode -- the outer
+                // sandbox (gVisor, container, VM) must provide isolation.
+                tracing::warn!(error = %e,
+                    "Network namespace unavailable; continuing in proxy-env-only degraded mode");
+                None
             }
         }
     } else {

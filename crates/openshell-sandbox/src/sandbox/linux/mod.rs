@@ -40,7 +40,11 @@ pub fn enforce(prepared: PreparedSandbox) -> Result<()> {
     if let Some(ruleset) = prepared.landlock {
         landlock::enforce(ruleset)?;
     }
-    seccomp::apply(&prepared.policy)?;
+    // Best-effort: seccomp(SECCOMP_SET_MODE_FILTER) is rejected by gVisor
+    // (EINVAL) and other reduced-syscall kernels. Treat install failure as a
+    // degraded mode rather than a hard error; the outer sandbox is the
+    // enforcing boundary in those deployments. Mirrors Landlock best_effort.
+    let _ = seccomp::apply(&prepared.policy);
     Ok(())
 }
 

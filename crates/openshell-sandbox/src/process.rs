@@ -477,6 +477,14 @@ pub fn drop_privileges(policy: &SandboxPolicy) -> Result<()> {
             .ok_or_else(|| miette::miette!("Failed to resolve user primary group"))?
     };
 
+    // Idempotent: if the process already has the target identity, no syscalls
+    // are needed. Avoids initgroups/setgid/setuid returning EPERM when the
+    // capability set is reduced (e.g. gVisor actor without CAP_SETGID/SETUID)
+    // and the configured run_as_user matches the current user (typically root).
+    if nix::unistd::geteuid() == user.uid && nix::unistd::getegid() == group.gid {
+        return Ok(());
+    }
+
     if user_name.is_some() {
         let user_cstr =
             CString::new(user.name.clone()).map_err(|_| miette::miette!("Invalid user name"))?;

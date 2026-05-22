@@ -567,8 +567,13 @@ pub async fn run_sandbox(
 
     // Install the supervisor seccomp prelude after privileged startup helpers
     // (network namespace setup, nftables probes) complete, but before the SSH
-    // listener and workload process are exposed.
-    apply_supervisor_startup_hardening()?;
+    // listener and workload process are exposed. When the host kernel refuses
+    // seccomp(SECCOMP_SET_MODE_FILTER) (e.g. gVisor returns EINVAL), continue
+    // unhardened: the outer sandbox is the enforcing boundary.
+    if let Err(e) = apply_supervisor_startup_hardening() {
+        tracing::warn!(error = %e,
+            "Supervisor seccomp prelude unavailable; continuing without in-process syscall hardening");
+    }
 
     // Shared PID: set after process spawn so the proxy can look up
     // the entrypoint process's /proc/net/tcp for identity binding.

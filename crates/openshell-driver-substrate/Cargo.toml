@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "openshell-driver-substrate"
+description = "Agent Substrate compute driver for OpenShell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+openshell-core = { path = "../openshell-core" }
+# The `openshell-sandbox-substrate` wrapper binary in this crate registers
+# our `DegradedHandler` against openshell-sandbox's `SandboxFailureHandler`
+# hook before delegating to the standard CLI entry point. The library
+# parts of this crate do not call into openshell-sandbox at runtime.
+openshell-sandbox = { path = "../openshell-sandbox" }
+
+tokio = { workspace = true }
+# `tls-native-roots` pulls in tonic's rustls-based TLS stack with the
+# host's system trust roots, which is the minimum needed to dial
+# https://ate-api-server endpoints under a custom CA.
+tonic = { workspace = true, features = ["transport", "tls", "tls-native-roots"] }
+prost = { workspace = true }
+prost-types = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+kube = { workspace = true }
+# `schemars` feature is required so the CRD-mirror types in
+# `template.rs` can derive `JsonSchema` over k8s-openapi types like
+# ContainerPort, EnvVar, ObjectReference.
+k8s-openapi = { workspace = true, features = ["schemars"] }
+schemars = "0.8"
+
+[build-dependencies]
+tonic-build = { workspace = true }
+protobuf-src = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "openshell-sandbox-substrate"
+path = "src/bin/openshell-sandbox-substrate.rs"
+
+[lints]
+workspace = true

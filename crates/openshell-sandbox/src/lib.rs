@@ -181,6 +181,8 @@ use crate::sandbox::linux::netns::NetworkNamespace;
 pub use process::{ProcessHandle, ProcessStatus};
 pub use sandbox::apply_supervisor_startup_hardening;
 
+pub mod cli;
+
 // === Failure-handler hook ====================================================
 //
 // Lets an outer-sandbox integration (e.g. gVisor) opt into best-effort

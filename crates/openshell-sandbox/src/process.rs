@@ -477,6 +477,14 @@ pub fn drop_privileges(policy: &SandboxPolicy) -> Result<()> {
             .ok_or_else(|| miette::miette!("Failed to resolve user primary group"))?
     };
 
+    // Idempotent fast-path: if the process is already running as the target
+    // uid/gid (e.g. the container entrypoint dropped privileges before exec),
+    // there is nothing to do. Skipping avoids initgroups(3), which requires
+    // CAP_SETGID and would fail otherwise.
+    if nix::unistd::geteuid() == user.uid && nix::unistd::getegid() == group.gid {
+        return Ok(());
+    }
+
     if user_name.is_some() {
         let user_cstr =
             CString::new(user.name.clone()).map_err(|_| miette::miette!("Invalid user name"))?;

@@ -40,7 +40,9 @@ pub fn enforce(prepared: PreparedSandbox) -> Result<()> {
     if let Some(ruleset) = prepared.landlock {
         landlock::enforce(ruleset)?;
     }
-    seccomp::apply(&prepared.policy)?;
+    if let Err(e) = seccomp::apply(&prepared.policy) {
+        crate::handle_bootstrap_failure("workload-seccomp", e)?;
+    }
     Ok(())
 }
 

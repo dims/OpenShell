@@ -111,6 +111,34 @@ pub(crate) fn agent_proposals_enabled() -> bool {
         .is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
 
+/// Operator-opt-in to best-effort bootstrap. When the
+/// `OPENSHELL_BEST_EFFORT_FAILURES` environment variable is set (to any
+/// value), the sandbox tolerates failures from optional hardening
+/// subsystems (network namespace, seccomp) instead of aborting. Intended
+/// for gVisor-on-Kubernetes deployments where the runtime degrades these
+/// syscalls. Default is strict (any failure aborts).
+fn best_effort_failures() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("OPENSHELL_BEST_EFFORT_FAILURES").is_some())
+}
+
+/// Dispatch a sandbox bootstrap failure: abort by default, warn-and-continue
+/// when the operator has opted into best-effort mode via
+/// [`best_effort_failures`].
+pub(crate) fn handle_bootstrap_failure(subsystem: &str, err: miette::Report) -> Result<()> {
+    if best_effort_failures() {
+        warn!(
+            subsystem,
+            error = %err,
+            "Sandbox bootstrap subsystem unavailable; continuing in best-effort mode \
+             (operator opted in via OPENSHELL_BEST_EFFORT_FAILURES)"
+        );
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
 /// Test-only helpers shared across sibling test modules.
 #[cfg(test)]
 pub(crate) mod test_helpers {
@@ -547,11 +575,15 @@ pub async fn run_sandbox(
                 Some(ns)
             }
             Err(e) => {
-                return Err(miette::miette!(
-                    "Network namespace creation failed and proxy mode requires isolation. \
-                     Ensure CAP_NET_ADMIN and CAP_SYS_ADMIN are available and iproute2 is installed. \
-                     Error: {e}"
-                ));
+                handle_bootstrap_failure(
+                    "network-namespace",
+                    miette::miette!(
+                        "Network namespace creation failed and proxy mode requires isolation. \
+                         Ensure CAP_NET_ADMIN and CAP_SYS_ADMIN are available and iproute2 is installed. \
+                         Error: {e}"
+                    ),
+                )?;
+                None
             }
         }
     } else {
@@ -566,7 +598,9 @@ pub async fn run_sandbox(
     // Install the supervisor seccomp prelude after privileged startup helpers
     // (network namespace setup, nftables probes) complete, but before the SSH
     // listener and workload process are exposed.
-    apply_supervisor_startup_hardening()?;
+    if let Err(e) = apply_supervisor_startup_hardening() {
+        handle_bootstrap_failure("supervisor-seccomp", e)?;
+    }
 
     // Shared PID: set after process spawn so the proxy can look up
     // the entrypoint process's /proc/net/tcp for identity binding.

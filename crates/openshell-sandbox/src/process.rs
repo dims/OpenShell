@@ -477,6 +477,13 @@ pub fn drop_privileges(policy: &SandboxPolicy) -> Result<()> {
             .ok_or_else(|| miette::miette!("Failed to resolve user primary group"))?
     };
 
+    // Skip the setresuid/setresgid no-op when the process already has
+    // the target identity; the kernel rejects it with EPERM under
+    // reduced cap sets (e.g. gVisor without CAP_SETGID/SETUID).
+    if nix::unistd::geteuid() == user.uid && nix::unistd::getegid() == group.gid {
+        return Ok(());
+    }
+
     if user_name.is_some() {
         let user_cstr =
             CString::new(user.name.clone()).map_err(|_| miette::miette!("Invalid user name"))?;

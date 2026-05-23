@@ -181,6 +181,56 @@ use crate::sandbox::linux::netns::NetworkNamespace;
 pub use process::{ProcessHandle, ProcessStatus};
 pub use sandbox::apply_supervisor_startup_hardening;
 
+pub mod cli;
+
+// === Failure-handler hook ====================================================
+//
+// Lets an outer-sandbox integration (e.g. gVisor) opt into best-effort
+// behaviour when the supervisor's privileged bootstrap syscalls are
+// refused by the host kernel. Default `StrictHandler` preserves the
+// existing hard-fail behaviour; integrations call `set_failure_handler()`
+// once at process start to register their own.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxFailureKind {
+    /// `unshare(CLONE_NEWNET)` or follow-up netns ops refused by the kernel.
+    NetworkNamespaceCreate,
+    /// The supervisor's own seccomp prelude install failed.
+    SupervisorSeccompInstall,
+    /// The workload's per-policy seccomp filter failed to install in `enforce`.
+    WorkloadSeccompInstall,
+}
+
+pub trait SandboxFailureHandler: Send + Sync + 'static {
+    /// Called when a bootstrap subsystem hits a host-level refusal. Returning
+    /// `Ok(())` tells the supervisor to continue in the corresponding degraded
+    /// mode; returning `Err(_)` aborts startup as before.
+    fn handle(&self, kind: SandboxFailureKind, err: miette::Report) -> Result<()>;
+}
+
+pub struct StrictHandler;
+impl SandboxFailureHandler for StrictHandler {
+    fn handle(&self, _kind: SandboxFailureKind, err: miette::Report) -> Result<()> {
+        Err(err)
+    }
+}
+
+static FAILURE_HANDLER: OnceLock<Box<dyn SandboxFailureHandler>> = OnceLock::new();
+
+/// Register a process-wide failure handler. Returns `Err` (giving back the
+/// handler) if a handler has already been installed or queried.
+pub fn set_failure_handler(
+    handler: Box<dyn SandboxFailureHandler>,
+) -> Result<(), Box<dyn SandboxFailureHandler>> {
+    FAILURE_HANDLER.set(handler)
+}
+
+pub(crate) fn failure_handler() -> &'static dyn SandboxFailureHandler {
+    FAILURE_HANDLER
+        .get_or_init(|| Box::new(StrictHandler))
+        .as_ref()
+}
+
 /// Default interval (seconds) for re-fetching the inference route bundle from
 /// the gateway in cluster mode. Override at runtime with the
 /// `OPENSHELL_ROUTE_REFRESH_INTERVAL_SECS` environment variable.
@@ -547,11 +597,15 @@ pub async fn run_sandbox(
                 Some(ns)
             }
             Err(e) => {
-                return Err(miette::miette!(
-                    "Network namespace creation failed and proxy mode requires isolation. \
-                     Ensure CAP_NET_ADMIN and CAP_SYS_ADMIN are available and iproute2 is installed. \
-                     Error: {e}"
-                ));
+                failure_handler().handle(
+                    SandboxFailureKind::NetworkNamespaceCreate,
+                    miette::miette!(
+                        "Network namespace creation failed and proxy mode requires isolation. \
+                         Ensure CAP_NET_ADMIN and CAP_SYS_ADMIN are available and iproute2 is installed. \
+                         Error: {e}"
+                    ),
+                )?;
+                None
             }
         }
     } else {
@@ -566,7 +620,9 @@ pub async fn run_sandbox(
     // Install the supervisor seccomp prelude after privileged startup helpers
     // (network namespace setup, nftables probes) complete, but before the SSH
     // listener and workload process are exposed.
-    apply_supervisor_startup_hardening()?;
+    if let Err(e) = apply_supervisor_startup_hardening() {
+        failure_handler().handle(SandboxFailureKind::SupervisorSeccompInstall, e)?;
+    }
 
     // Shared PID: set after process spawn so the proxy can look up
     // the entrypoint process's /proc/net/tcp for identity binding.

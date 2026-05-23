@@ -119,6 +119,27 @@ pub fn prepare(policy: &SandboxPolicy, workdir: Option<&str>) -> Result<Option<P
         return Ok(None);
     }
 
+    // Skip ruleset construction when the kernel does not implement Landlock
+    // (e.g. gVisor). The `landlock` crate would otherwise silently degrade
+    // to a no-op ruleset under `BestEffort` and emit misleading "Applying"
+    // / "Built" events. `log_sandbox_readiness` already emitted the
+    // operator-facing "Landlock unavailable" finding for this case.
+    if !matches!(probe_availability(), LandlockAvailability::Available { .. })
+        && matches!(policy.landlock.compatibility, LandlockCompatibility::BestEffort)
+    {
+        openshell_ocsf::ocsf_emit!(
+            openshell_ocsf::ConfigStateChangeBuilder::new(crate::ocsf_ctx())
+                .severity(openshell_ocsf::SeverityId::Informational)
+                .status(openshell_ocsf::StatusId::Success)
+                .state(openshell_ocsf::StateId::Other, "skipped")
+                .message(String::from(
+                    "Landlock filesystem sandbox skipped: kernel does not implement Landlock (best_effort)",
+                ))
+                .build()
+        );
+        return Ok(None);
+    }
+
     let total_paths = read_only.len() + read_write.len();
     let abi = ABI::V2;
     openshell_ocsf::ocsf_emit!(

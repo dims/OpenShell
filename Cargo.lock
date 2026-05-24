@@ -2612,6 +2612,7 @@ checksum = "550f99d93aa4c2b25de527bce492d772caf5e21d7ac9bd4b508ba781c8d91e30"
 dependencies = [
  "base64 0.21.7",
  "chrono",
+ "schemars",
  "serde",
  "serde-value",
  "serde_json",
@@ -3537,6 +3538,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshell-driver-substrate"
+version = "0.1.0"
+source = "git+https://github.com/dims/openshell-driver-substrate?rev=2f7a8578e9debcac3821c95a57999b4e85d28b2b#2f7a8578e9debcac3821c95a57999b4e85d28b2b"
+dependencies = [
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "miette",
+ "openshell-core",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tracing",
+]
+
+[[package]]
 name = "openshell-driver-vm"
 version = "0.0.0"
 dependencies = [
@@ -3715,6 +3740,7 @@ dependencies = [
  "openshell-driver-docker",
  "openshell-driver-kubernetes",
  "openshell-driver-podman",
+ "openshell-driver-substrate",
  "openshell-ocsf",
  "openshell-policy",
  "openshell-providers",

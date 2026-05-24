@@ -63,6 +63,7 @@ pub use grpc::OpenShellService;
 pub use http::{health_router, http_router, metrics_router, service_http_router};
 pub use multiplex::{MultiplexService, MultiplexedService};
 use openshell_driver_kubernetes::KubernetesComputeConfig;
+use openshell_driver_substrate::SubstrateComputeConfig;
 use persistence::Store;
 use sandbox_index::SandboxIndex;
 use sandbox_watch::SandboxWatchBus;
@@ -757,6 +758,19 @@ async fn build_compute_runtime(
             .await
             .map_err(|e| Error::execution(format!("failed to create compute runtime: {e}")))
         }
+        ComputeDriverKind::Substrate => {
+            let substrate = substrate_config_from_file(file)?;
+            ComputeRuntime::new_substrate(
+                substrate,
+                store,
+                sandbox_index,
+                sandbox_watch_bus,
+                tracing_log_bus,
+                supervisor_sessions,
+            )
+            .await
+            .map_err(|e| Error::execution(format!("failed to create compute runtime: {e}")))
+        }
     }
 }
 
@@ -778,6 +792,26 @@ fn kubernetes_config_from_file(
     merged
         .try_into()
         .map_err(|e| Error::config(format!("invalid [openshell.drivers.kubernetes] table: {e}")))
+}
+
+/// Build a [`SubstrateComputeConfig`] from the file's
+/// `[openshell.drivers.substrate]` table merged with inheritable
+/// `[openshell.gateway]` defaults. Falls back to the driver's `Default`
+/// when no file is present.
+fn substrate_config_from_file(
+    file: Option<&config_file::ConfigFile>,
+) -> Result<SubstrateComputeConfig> {
+    let Some(file) = file else {
+        return Ok(SubstrateComputeConfig::default());
+    };
+    let merged = config_file::driver_table(
+        ComputeDriverKind::Substrate,
+        &file.openshell.gateway,
+        file.openshell.drivers.get("substrate"),
+    );
+    merged
+        .try_into()
+        .map_err(|e| Error::config(format!("invalid [openshell.drivers.substrate] table: {e}")))
 }
 
 fn kubernetes_config_for_k8s_sa_bootstrap(
@@ -852,7 +886,8 @@ fn configured_compute_driver(config: &Config) -> Result<ComputeDriverKind> {
             driver @ (ComputeDriverKind::Kubernetes
             | ComputeDriverKind::Vm
             | ComputeDriverKind::Docker
-            | ComputeDriverKind::Podman),
+            | ComputeDriverKind::Podman
+            | ComputeDriverKind::Substrate),
         ] => Ok(*driver),
         drivers => Err(Error::config(format!(
             "multiple compute drivers are not supported yet; configured drivers: {}",

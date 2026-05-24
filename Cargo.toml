@@ -151,3 +151,11 @@ strip = true
 [profile.dev]
 # Faster compile times for dev builds
 debug = 1
+
+# openshell-driver-substrate is pulled in as a git dep (see
+# crates/openshell-server/Cargo.toml). Its own Cargo.toml pins
+# openshell-core to a specific rev on dims/OpenShell. Redirect that
+# transitive dep to the workspace's local openshell-core so we don't
+# end up compiling two openshell-cores at slightly different revs.
+[patch."https://github.com/dims/OpenShell"]
+openshell-core = { path = "crates/openshell-core" }

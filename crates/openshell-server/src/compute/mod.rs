@@ -34,6 +34,8 @@ use openshell_driver_kubernetes::{
 use openshell_driver_podman::{
     ComputeDriverService as PodmanDriverService, PodmanComputeConfig, PodmanComputeDriver,
 };
+pub use openshell_driver_substrate::SubstrateComputeConfig;
+use openshell_driver_substrate::SubstrateComputeDriver;
 use prost::Message;
 use std::fmt;
 use std::net::SocketAddr;
@@ -331,6 +333,34 @@ impl ComputeRuntime {
             .await
             .map_err(|err| ComputeError::Message(err.to_string()))?;
         let driver: SharedComputeDriver = Arc::new(ComputeDriverService::new(driver));
+        Self::from_driver(
+            driver,
+            None,
+            None,
+            None,
+            store,
+            sandbox_index,
+            sandbox_watch_bus,
+            tracing_log_bus,
+            supervisor_sessions,
+            false,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn new_substrate(
+        config: SubstrateComputeConfig,
+        store: Arc<Store>,
+        sandbox_index: SandboxIndex,
+        sandbox_watch_bus: SandboxWatchBus,
+        tracing_log_bus: TracingLogBus,
+        supervisor_sessions: Arc<SupervisorSessionRegistry>,
+    ) -> Result<Self, ComputeError> {
+        // SubstrateComputeDriver directly impls ComputeDriver with the
+        // same WatchStream type SharedComputeDriver expects, so no
+        // ComputeDriverService-style adapter is needed.
+        let driver: SharedComputeDriver = Arc::new(SubstrateComputeDriver::new(config));
         Self::from_driver(
             driver,
             None,

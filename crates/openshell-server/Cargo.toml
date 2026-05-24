@@ -20,6 +20,11 @@ openshell-core = { path = "../openshell-core" }
 openshell-driver-docker = { path = "../openshell-driver-docker" }
 openshell-driver-kubernetes = { path = "../openshell-driver-kubernetes" }
 openshell-driver-podman = { path = "../openshell-driver-podman" }
+# Driver code lives in dims/openshell-driver-substrate#main (the
+# standalone repo). Pin a specific commit so the gateway build is
+# reproducible. To pick up new driver work: bump rev to the latest
+# commit on that repo's main.
+openshell-driver-substrate = { git = "https://github.com/dims/openshell-driver-substrate", rev = "2f7a8578e9debcac3821c95a57999b4e85d28b2b" }
 openshell-ocsf = { path = "../openshell-ocsf" }
 openshell-policy = { path = "../openshell-policy" }
 openshell-providers = { path = "../openshell-providers" }

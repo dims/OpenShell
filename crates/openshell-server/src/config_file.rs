@@ -285,6 +285,10 @@ fn inheritable_keys(driver: ComputeDriverKind) -> &'static [&'static str] {
             "guest_tls_cert",
             "guest_tls_key",
         ],
+        // Scaffold: the Substrate driver does not yet read TOML config.
+        // When the M3 implementation lands, return the inheritable keys
+        // for its [openshell.drivers.substrate] block here.
+        ComputeDriverKind::Substrate => &[],
     }
 }
 

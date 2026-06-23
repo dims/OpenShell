@@ -194,6 +194,7 @@ impl TelemetryComputeDriver {
             Some(crate::ComputeDriverKind::Kubernetes) => Self::Kubernetes,
             Some(crate::ComputeDriverKind::Podman) => Self::Podman,
             Some(crate::ComputeDriverKind::Vm) => Self::Vm,
+            Some(crate::ComputeDriverKind::Substrate) => Self::Unknown,
             None => Self::Unknown,
         }
     }

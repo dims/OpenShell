@@ -299,18 +299,31 @@ fn qualify_runtime() -> Result<(openshell_sandbox::RuntimeQualification, Qualifi
 
 #[cfg(target_os = "linux")]
 fn probe_dns_relay_bind() -> Result<()> {
+    use miette::Context as _;
     use std::net::{TcpListener, UdpSocket};
 
-    let unprivileged_port_start =
-        std::fs::read_to_string("/proc/sys/net/ipv4/ip_unprivileged_port_start")
-            .into_diagnostic()?
-            .trim()
-            .parse::<u16>()
-            .into_diagnostic()?;
-    if unprivileged_port_start != 0 {
-        return Err(miette::miette!(
-            "DNS relay requires net.ipv4.ip_unprivileged_port_start=0, got {unprivileged_port_start}"
-        ));
+    // The sysctl is read to turn the common misconfiguration into a message
+    // that names it, because a bare EACCES on port 53 does not. Not every
+    // runtime exposes the knob -- gVisor's procfs has no
+    // net/ipv4/ip_unprivileged_port_start -- and on those the bind below is
+    // the real test either way, so its absence is not a failure. A present
+    // but wrong value still is.
+    const UNPRIVILEGED_PORT_START: &str = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
+    match std::fs::read_to_string(UNPRIVILEGED_PORT_START) {
+        Ok(contents) => {
+            let start = contents.trim().parse::<u16>().into_diagnostic()?;
+            if start != 0 {
+                return Err(miette::miette!(
+                    "DNS relay requires net.ipv4.ip_unprivileged_port_start=0, got {start}"
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .into_diagnostic()
+                .wrap_err(format!("read {UNPRIVILEGED_PORT_START}"));
+        }
     }
     let tcp = TcpListener::bind("127.0.0.53:53").into_diagnostic()?;
     let udp = UdpSocket::bind("127.0.0.53:53").into_diagnostic()?;

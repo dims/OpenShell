@@ -363,3 +363,42 @@ mod tests {
         assert!(MainProcessConfig::decode(r#"{"version":1,"command":[""],"tty":false}"#).is_err());
     }
 }
+
+/// Selects the in-sandbox enforcement mechanism.
+///
+/// `native-linux`, the default, uses Landlock for filesystem confinement and a
+/// seccomp user-notification broker for egress. `gvisor` runs under an outer
+/// sandbox that implements neither, and confines and mediates by other means.
+/// An unrecognized value is an error rather than a fallback, so a typo fails
+/// the sandbox instead of silently selecting the weaker mode.
+pub const ISOLATION_MODE: &str = "OPENSHELL_ISOLATION_MODE";
+
+/// The enforcement mechanism named by [`ISOLATION_MODE`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IsolationMode {
+    #[default]
+    NativeLinux,
+    Gvisor,
+}
+
+impl IsolationMode {
+    /// Read the mode from the environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns the offending value when it names no known mode.
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var(ISOLATION_MODE).as_deref() {
+            Err(_) | Ok("") | Ok("native-linux") => Ok(Self::NativeLinux),
+            Ok("gvisor") => Ok(Self::Gvisor),
+            Ok(other) => Err(format!(
+                "unknown {ISOLATION_MODE} {other:?}, expected \"native-linux\" or \"gvisor\""
+            )),
+        }
+    }
+
+    #[must_use]
+    pub fn is_gvisor(self) -> bool {
+        matches!(self, Self::Gvisor)
+    }
+}

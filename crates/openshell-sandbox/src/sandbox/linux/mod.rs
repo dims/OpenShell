@@ -56,9 +56,18 @@ pub fn prepare_capability_free(
     policy: &SandboxPolicy,
     workdir: Option<&str>,
 ) -> Result<PreparedSandbox> {
-    let baseline = landlock::prepare_capability_free_baseline()?;
+    // A runtime that implements no Landlock cannot build the baseline, and the
+    // outer sandbox is the confining layer there instead. The sandbox says so
+    // in its qualification rather than claiming a confinement it does not have.
+    let gvisor = openshell_core::sandbox_env::IsolationMode::from_env()
+        .map_err(|error| miette::miette!("{error}"))?
+        .is_gvisor();
+    let mut landlock = if gvisor {
+        Vec::new()
+    } else {
+        vec![landlock::prepare_capability_free_baseline()?]
+    };
     let user = landlock::prepare_current_user(policy, workdir)?;
-    let mut landlock = vec![baseline];
     landlock.extend(user);
     Ok(PreparedSandbox {
         landlock,

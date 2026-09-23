@@ -221,14 +221,32 @@ mod linux {
             crate::managed_children::start_orphan_reaper()
                 .map_err(|error| format!("start sandbox orphan reaper: {error}"))?;
         }
-        let (launcher, listener) = openshell_isolation_interface::linux::workload_launcher::start()
-            .map_err(|error| format!("start sandbox workload launcher: {error}"))?;
-        let protected_control_port = match &config.listener {
-            BoundaryListenerConfig::TlsTcp { address, .. } => Some(address.port()),
-            BoundaryListenerConfig::Unix { .. } | BoundaryListenerConfig::Vsock { .. } => None,
+        // Under a runtime with no seccomp user notification there is no
+        // listener to install and nothing for the broker loop to receive. The
+        // launcher thread still exists, because workload children must be
+        // forked from it in a fixed order, and the DNS relay still runs.
+        let gvisor = openshell_core::sandbox_env::IsolationMode::from_env()
+            .map_err(|error| format!("read isolation mode: {error}"))?
+            .is_gvisor();
+        let (launcher, network_broker) = if gvisor {
+            let launcher =
+                openshell_isolation_interface::linux::workload_launcher::start_unmediated()
+                    .map_err(|error| format!("start sandbox workload launcher: {error}"))?;
+            let broker = NetworkBroker::start_unmediated()
+                .map_err(|error| format!("start sandbox DNS relay: {error}"))?;
+            (launcher, broker)
+        } else {
+            let (launcher, listener) =
+                openshell_isolation_interface::linux::workload_launcher::start()
+                    .map_err(|error| format!("start sandbox workload launcher: {error}"))?;
+            let protected_control_port = match &config.listener {
+                BoundaryListenerConfig::TlsTcp { address, .. } => Some(address.port()),
+                BoundaryListenerConfig::Unix { .. } | BoundaryListenerConfig::Vsock { .. } => None,
+            };
+            let broker = NetworkBroker::start(listener, protected_control_port)
+                .map_err(|error| format!("start sandbox network broker: {error}"))?;
+            (launcher, broker)
         };
-        let network_broker = NetworkBroker::start(listener, protected_control_port)
-            .map_err(|error| format!("start sandbox network broker: {error}"))?;
         let process_runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()

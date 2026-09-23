@@ -68,6 +68,26 @@ impl WorkloadLauncher {
 /// Start the only workload launcher and return its listener to an unfiltered
 /// sandbox thread.
 pub fn start() -> io::Result<(WorkloadLauncher, NotificationListener)> {
+    let (launcher, listener) = start_inner(true)?;
+    let listener = listener.ok_or_else(|| {
+        io::Error::other("mediated workload launcher published no notification listener")
+    })?;
+    Ok((launcher, listener))
+}
+
+/// Start the workload launcher with no notification listener.
+///
+/// For a runtime whose kernel does not implement seccomp user notification.
+/// Children are still forked and exec'd from the one launcher thread, so the
+/// ordering the sandbox depends on is unchanged, but nothing mediates their
+/// syscalls. A sandbox started this way must confine egress by another
+/// mechanism; this function grants none.
+pub fn start_unmediated() -> io::Result<WorkloadLauncher> {
+    let (launcher, _) = start_inner(false)?;
+    Ok(launcher)
+}
+
+fn start_inner(mediate: bool) -> io::Result<(WorkloadLauncher, Option<NotificationListener>)> {
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<LaunchJob>(64);
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let alive = Arc::new(AtomicBool::new(true));
@@ -75,21 +95,24 @@ pub fn start() -> io::Result<(WorkloadLauncher, NotificationListener)> {
     thread::Builder::new()
         .name("openshell-workload-launcher".to_string())
         .spawn(move || {
-            match install_workload_listener() {
-                Ok(listener) => {
-                    if ready_tx.send(Ok(listener)).is_err() {
+            let published = if mediate {
+                match install_workload_listener() {
+                    Ok(listener) => ready_tx.send(Ok(Some(listener))),
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(io::Error::new(
+                            error.kind(),
+                            format!("install workload listener: {error}"),
+                        )));
                         thread_alive.store(false, Ordering::Release);
                         return;
                     }
                 }
-                Err(error) => {
-                    let _ = ready_tx.send(Err(io::Error::new(
-                        error.kind(),
-                        format!("install workload listener: {error}"),
-                    )));
-                    thread_alive.store(false, Ordering::Release);
-                    return;
-                }
+            } else {
+                ready_tx.send(Ok(None))
+            };
+            if published.is_err() {
+                thread_alive.store(false, Ordering::Release);
+                return;
             }
             while let Ok(job) = jobs_rx.recv() {
                 job();

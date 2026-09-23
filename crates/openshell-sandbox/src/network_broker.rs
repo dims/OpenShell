@@ -319,6 +319,33 @@ impl NetworkBroker {
         })
     }
 
+    /// Start the DNS relay with no notification broker behind it.
+    ///
+    /// For a runtime whose kernel does not implement seccomp user
+    /// notification. The relay is a pair of ordinary sockets and needs none, so
+    /// policy DNS keeps working. TCP egress is **not** mediated here: `accept`
+    /// never yields, and a sandbox started this way must capture egress by some
+    /// other mechanism before it can claim interception.
+    pub(crate) fn start_unmediated() -> io::Result<Self> {
+        // Nothing can validate a notification id without a listener, so the
+        // monitor answers no to every one rather than guessing.
+        let accept_monitor = Arc::new(crate::accept_interrupt::AcceptMonitor::start(|_| false)?);
+        // The sender is dropped immediately: with no broker there is nothing to
+        // enqueue, and `accept` reports a closed queue instead of hanging.
+        let (_, pending_rx) = mpsc::channel(OPEN_QUEUE_CAPACITY);
+        let (pending_dns_tx, pending_dns_rx) = mpsc::channel(DNS_QUEUE_CAPACITY);
+        // The relay threads own the bound sockets, so dropping this handle does
+        // not stop them.
+        let dns_relay = start_dns_relay(DNS_RELAY_ADDRESS, pending_dns_tx)?;
+        Ok(Self {
+            _accept_monitor: accept_monitor,
+            pending: Arc::new(tokio::sync::Mutex::new(pending_rx)),
+            pending_dns: Arc::new(tokio::sync::Mutex::new(pending_dns_rx)),
+            dns_address: dns_relay.address,
+            healthy: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
     pub(crate) async fn accept(&self) -> io::Result<PendingTcpOpen> {
         self.pending
             .lock()

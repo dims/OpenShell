@@ -150,6 +150,20 @@ pub struct NotificationProbeReport {
 struct NotificationProbeFeatures(u8);
 
 impl NotificationProbeReport {
+    /// A report for a runtime that implements no notification API.
+    ///
+    /// Every feature reads false. A sandbox class whose kernel lacks the
+    /// syscall records this instead of probing, because the probes cannot run
+    /// where the mechanism is absent. Such a sandbox must mediate egress by
+    /// some other means; nothing here grants it.
+    #[must_use]
+    pub fn unavailable() -> Self {
+        Self {
+            wait_killable_recv: false,
+            features: NotificationProbeFeatures(0),
+        }
+    }
+
     /// Whether ID validation and response delivery completed.
     #[must_use]
     pub fn notification_round_trip(self) -> bool {

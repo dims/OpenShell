@@ -133,6 +133,9 @@ struct QualificationReport {
     child_dumpable: bool,
     child_core_limit_zero: bool,
     same_uid_self_protection: bool,
+    /// Which enforcement mechanism the probes were run against, so a report is
+    /// readable without knowing how the sandbox was launched.
+    isolation_mode: &'static str,
     landlock_abi: u32,
     landlock_allow_deny: bool,
     seccomp_notification: bool,
@@ -197,21 +200,40 @@ fn qualify_runtime() -> Result<(openshell_sandbox::RuntimeQualification, Qualifi
     openshell_isolation_interface::linux::task_memory::probe_child_access()
         .into_diagnostic()
         .wrap_err("same-UID task-memory probe")?;
-    probe_landlock_allow_deny().wrap_err("Landlock allow/deny probe")?;
-    let notification =
+    // Landlock and seccomp user notification are the native-Linux mechanisms.
+    // gVisor implements neither, so under it these probes measure nothing and
+    // the qualification records their absence instead of refusing to start.
+    // What replaces them is the gVisor backend's business, and the supervisor
+    // validates that backend's own evidence rather than this one.
+    let mode = openshell_core::sandbox_env::IsolationMode::from_env()
+        .map_err(|error| miette::miette!("{error}"))?;
+    let gvisor = mode.is_gvisor();
+
+    let notification = if gvisor {
+        openshell_isolation_interface::linux::seccomp_notify::NotificationProbeReport::unavailable()
+    } else {
+        probe_landlock_allow_deny().wrap_err("Landlock allow/deny probe")?;
         openshell_isolation_interface::linux::seccomp_notify::probe_notification_api()
             .into_diagnostic()
-            .wrap_err("seccomp notification probe")?;
-    probe_socket_virtualization().wrap_err("socket virtualization probe")?;
-    probe_dns_relay_bind().wrap_err("DNS relay bind probe")?;
-    let landlock_abi = openshell_isolation_interface::linux::landlock::abi_version()
-        .into_diagnostic()
-        .wrap_err("Landlock ABI probe")?;
-    if landlock_abi < 3 {
-        return Err(miette::miette!(
-            "sandbox self-protection requires Landlock ABI v3 or newer (including truncation), found v{landlock_abi}"
-        ));
+            .wrap_err("seccomp notification probe")?
+    };
+    if !gvisor {
+        probe_socket_virtualization().wrap_err("socket virtualization probe")?;
     }
+    probe_dns_relay_bind().wrap_err("DNS relay bind probe")?;
+    let landlock_abi = if gvisor {
+        0
+    } else {
+        let abi = openshell_isolation_interface::linux::landlock::abi_version()
+            .into_diagnostic()
+            .wrap_err("Landlock ABI probe")?;
+        if abi < 3 {
+            return Err(miette::miette!(
+                "sandbox self-protection requires Landlock ABI v3 or newer (including truncation), found v{abi}"
+            ));
+        }
+        abi
+    };
 
     let groups = nix::unistd::getgroups()
         .into_diagnostic()?
@@ -229,13 +251,14 @@ fn qualify_runtime() -> Result<(openshell_sandbox::RuntimeQualification, Qualifi
         child_dumpable: true,
         child_core_limit_zero: true,
         same_uid_self_protection: true,
+        isolation_mode: if gvisor { "gvisor" } else { "native-linux" },
         landlock_abi,
-        landlock_allow_deny: true,
+        landlock_allow_deny: !gvisor,
         seccomp_notification: notification.notification_round_trip(),
         seccomp_addfd_send: notification.addfd_send(),
         task_memory_copy: notification.task_memory_copy(),
         connected_send_fast_path: notification.connected_send_fast_path(),
-        socket_virtualization: true,
+        socket_virtualization: !gvisor,
         dns_relay_bind: true,
         udp_dns_round_trip: true,
         tcp_dns_round_trip: true,
@@ -255,8 +278,8 @@ fn qualify_runtime() -> Result<(openshell_sandbox::RuntimeQualification, Qualifi
             notification_round_trip: notification.notification_round_trip(),
             id_validation: notification.notification_round_trip(),
             addfd_send: notification.addfd_send(),
-            retained_socket_operation: true,
-            proc_fd_identity: true,
+            retained_socket_operation: !gvisor,
+            proc_fd_identity: !gvisor,
             task_memory_read: notification.task_memory_copy(),
             task_memory_write: notification.task_memory_copy(),
             cancellation: notification.wait_killable_recv,
@@ -265,7 +288,7 @@ fn qualify_runtime() -> Result<(openshell_sandbox::RuntimeQualification, Qualifi
             task_memory_writes_disabled: !notification.wait_killable_recv,
         },
         landlock_abi,
-        landlock_allow_deny: true,
+        landlock_allow_deny: !gvisor,
         udp_dns_round_trip: true,
         tcp_dns_round_trip: true,
         tcp_allow_round_trip: true,

@@ -103,34 +103,62 @@ fn acquire_pending_open_slot(active: &Arc<AtomicUsize>) -> io::Result<PendingOpe
         .map_err(|_| io::Error::from_raw_os_error(libc::EAGAIN))
 }
 
-/// One external TCP open blocked in `connect(2)` until the supervisor decides.
+/// How the byte stream for a pending open is obtained once it is authorized.
+enum OpenCompletion {
+    /// Notification path: the workload thread is still blocked in `connect(2)`
+    /// and the broker builds a loopback relay after the decision.
+    Brokered {
+        decision: std::sync::mpsc::SyncSender<TcpOpenDecision>,
+        relay: oneshot::Receiver<io::Result<TcpStream>>,
+    },
+    /// Redirect path: netfilter already bent the connection to the sandbox and
+    /// it has been accepted, so the stream exists before the decision does.
+    /// Dropping it on a denial is what closes the workload's connection.
+    Redirected(TcpStream),
+}
+
+/// One external TCP open awaiting the supervisor's decision.
 pub struct PendingTcpOpen {
     pub(crate) destination: SocketAddr,
     pub(crate) identity: Result<BinaryIdentity, ResolveError>,
     pub(crate) socket: NetworkSocketMetadata,
     pub(crate) notification_to_queue: Duration,
     pub(crate) queued_at: Instant,
-    decision: std::sync::mpsc::SyncSender<TcpOpenDecision>,
-    relay: oneshot::Receiver<io::Result<TcpStream>>,
+    completion: OpenCompletion,
 }
 
 impl PendingTcpOpen {
     pub(crate) async fn complete(self, decision: TcpOpenDecision) -> io::Result<Option<TcpStream>> {
-        self.decision
-            .send(decision)
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "network broker stopped"))?;
-        if matches!(decision, TcpOpenDecision::Denied(_)) {
-            return Ok(None);
+        match self.completion {
+            OpenCompletion::Brokered {
+                decision: decision_tx,
+                relay,
+            } => {
+                decision_tx.send(decision).map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "network broker stopped")
+                })?;
+                if matches!(decision, TcpOpenDecision::Denied(_)) {
+                    return Ok(None);
+                }
+                relay
+                    .await
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "network relay setup was cancelled",
+                        )
+                    })?
+                    .map(Some)
+            }
+            OpenCompletion::Redirected(stream) => {
+                if matches!(decision, TcpOpenDecision::Denied(_)) {
+                    // Returning without the stream drops it, which closes the
+                    // workload's already-established connection.
+                    return Ok(None);
+                }
+                Ok(Some(stream))
+            }
         }
-        self.relay
-            .await
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "network relay setup was cancelled",
-                )
-            })?
-            .map(Some)
     }
 }
 
@@ -319,6 +347,13 @@ impl NetworkBroker {
         })
     }
 
+    /// Port the netfilter REDIRECT rule sends workload TCP to.
+    ///
+    /// Fixed rather than ephemeral because the rule that points at it is
+    /// installed before the sandbox starts, so the two have to agree on a
+    /// number neither can learn from the other.
+    pub(crate) const REDIRECT_PORT: u16 = 18515;
+
     /// Start the DNS relay with no notification broker behind it.
     ///
     /// For a runtime whose kernel does not implement seccomp user
@@ -330,10 +365,9 @@ impl NetworkBroker {
         // Nothing can validate a notification id without a listener, so the
         // monitor answers no to every one rather than guessing.
         let accept_monitor = Arc::new(crate::accept_interrupt::AcceptMonitor::start(|_| false)?);
-        // The sender is dropped immediately: with no broker there is nothing to
-        // enqueue, and `accept` reports a closed queue instead of hanging.
-        let (_, pending_rx) = mpsc::channel(OPEN_QUEUE_CAPACITY);
+        let (pending_tx, pending_rx) = mpsc::channel(OPEN_QUEUE_CAPACITY);
         let (pending_dns_tx, pending_dns_rx) = mpsc::channel(DNS_QUEUE_CAPACITY);
+        start_redirect_acceptor(pending_tx)?;
         // The relay threads own the bound sockets, so dropping this handle does
         // not stop them.
         let dns_relay = start_dns_relay(DNS_RELAY_ADDRESS, pending_dns_tx)?;
@@ -379,6 +413,101 @@ impl NetworkBroker {
             ))
         }
     }
+}
+
+/// Recover the address a redirected connection was originally opened to.
+///
+/// `SO_ORIGINAL_DST` reads it back out of the connection-tracking entry the
+/// REDIRECT target created, which is the only surviving record of it: the
+/// socket's own peer address is the sandbox.
+fn original_destination(stream: &TcpStream) -> io::Result<SocketAddr> {
+    const SO_ORIGINAL_DST: libc::c_int = 80;
+    let mut addr = unsafe { std::mem::zeroed::<libc::sockaddr_in>() };
+    let mut len = u32::try_from(std::mem::size_of::<libc::sockaddr_in>())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: addr and len describe a sockaddr_in and its size, which is what
+    // SOL_IP/SO_ORIGINAL_DST writes for an IPv4 connection.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_IP,
+            SO_ORIGINAL_DST,
+            std::ptr::from_mut(&mut addr).cast(),
+            &raw mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr))),
+        u16::from_be(addr.sin_port),
+    ))
+}
+
+/// Accept connections a netfilter REDIRECT rule bent to the sandbox and queue
+/// each one for the supervisor's decision.
+///
+/// This is the egress capture mechanism for runtimes with no seccomp user
+/// notification. It sees a connection only after the kernel has established
+/// it, so unlike the notification path it cannot hold the workload in
+/// `connect(2)`; a denial closes an open connection rather than failing the
+/// call. The workload learns the difference, and the packets still never
+/// leave, because the REDIRECT rule is paired with a default-deny fence.
+fn start_redirect_acceptor(pending: mpsc::Sender<PendingTcpOpen>) -> io::Result<()> {
+    // AF_INET, deliberately not dual stack. gVisor resolves SO_ORIGINAL_DST
+    // through conntrack keyed on the protocol the *socket* was created with,
+    // so an accepted IPv4 connection on an AF_INET6 listener misses the entry
+    // and reads back ENOTCONN.
+    let listener = TcpListener::bind(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        NetworkBroker::REDIRECT_PORT,
+    ))?;
+    std::thread::Builder::new()
+        .name("openshell-redirect-acceptor".to_string())
+        .spawn(move || {
+            loop {
+                let accepted_at = Instant::now();
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) => {
+                        tracing::warn!(%error, "redirected connection accept failed");
+                        continue;
+                    }
+                };
+                let destination = match original_destination(&stream) {
+                    Ok(destination) => destination,
+                    Err(error) => {
+                        // Without the original destination there is nothing to
+                        // ask policy about, so the connection is dropped.
+                        tracing::warn!(%error, "redirected connection has no original destination");
+                        continue;
+                    }
+                };
+                let open = PendingTcpOpen {
+                    destination,
+                    // A 4-tuple does not name a process. The notification path
+                    // resolves identity from the calling thread; nothing here
+                    // can, so it is reported unresolved rather than guessed.
+                    identity: Err(ResolveError::Failed(
+                        "redirected connections carry no calling-thread identity".to_string(),
+                    )),
+                    socket: NetworkSocketMetadata {
+                        socket_cookie: 0,
+                        nonblocking: false,
+                        process_generation: 0,
+                    },
+                    notification_to_queue: accepted_at.elapsed(),
+                    queued_at: Instant::now(),
+                    completion: OpenCompletion::Redirected(stream),
+                };
+                if pending.try_send(open).is_err() {
+                    tracing::warn!("network-open queue full, dropping redirected connection");
+                }
+            }
+        })
+        .map_err(|error| io::Error::other(format!("start redirect acceptor: {error}")))?;
+    Ok(())
 }
 
 fn start_dns_relay(
@@ -875,8 +1004,10 @@ fn connect_socket(
             },
             notification_to_queue: notification_started.elapsed(),
             queued_at: Instant::now(),
-            decision: decision_tx,
-            relay: relay_rx,
+            completion: OpenCompletion::Brokered {
+                decision: decision_tx,
+                relay: relay_rx,
+            },
         })
         .map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => io::Error::from_raw_os_error(libc::EAGAIN),

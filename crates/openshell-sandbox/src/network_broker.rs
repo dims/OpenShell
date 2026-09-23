@@ -237,6 +237,10 @@ pub struct NetworkBroker {
     pending_dns: Arc<tokio::sync::Mutex<mpsc::Receiver<PendingDnsQuery>>>,
     dns_address: SocketAddr,
     healthy: Arc<AtomicBool>,
+    /// Whether egress arrives by netfilter redirect rather than by seccomp
+    /// notification. Reported as evidence, so it records what this process
+    /// actually did, not what it was configured to do.
+    redirect_capture: bool,
 }
 
 impl NetworkBroker {
@@ -344,6 +348,7 @@ impl NetworkBroker {
             pending_dns: Arc::new(tokio::sync::Mutex::new(pending_dns_rx)),
             dns_address,
             healthy,
+            redirect_capture: false,
         })
     }
 
@@ -377,6 +382,7 @@ impl NetworkBroker {
             pending_dns: Arc::new(tokio::sync::Mutex::new(pending_dns_rx)),
             dns_address: dns_relay.address,
             healthy: Arc::new(AtomicBool::new(true)),
+            redirect_capture: true,
         })
     }
 
@@ -401,6 +407,11 @@ impl NetworkBroker {
     #[cfg(test)]
     pub(crate) fn dns_address(&self) -> SocketAddr {
         self.dns_address
+    }
+
+    /// Whether the redirect acceptor holds the port the netfilter rule targets.
+    pub(crate) fn redirect_capture(&self) -> bool {
+        self.redirect_capture
     }
 
     pub(crate) fn confirm_healthy(&self) -> io::Result<()> {

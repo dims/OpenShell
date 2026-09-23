@@ -85,6 +85,36 @@ pub struct SeccompEvidence {
     pub task_memory_writes_disabled: bool,
 }
 
+/// The in-sandbox enforcement mechanism a boundary was measured against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxMechanism {
+    /// Landlock for filesystem confinement, a seccomp user-notification broker
+    /// for egress.
+    #[default]
+    NativeLinux,
+    /// An outer gVisor sandbox implements neither, so the sentry confines the
+    /// filesystem and a netfilter redirect captures egress.
+    Gvisor,
+}
+
+/// Measurements that only exist under gVisor.
+///
+/// Each is something the sandbox process can observe about itself. What it
+/// cannot observe -- that the egress fence is installed, and that the sentry
+/// is confining its filesystem view -- is attested by the enforcement owner
+/// through `OuterFenceGuarantees` and the backend descriptor instead, because
+/// a process cannot vouch for the box it is running in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GvisorEvidence {
+    /// The redirect acceptor holds the port the netfilter rule targets, so no
+    /// other process can claim captured connections.
+    pub redirect_capture: bool,
+    /// `/proc/net/tcp` and `/proc/<pid>/fd` are both readable, which is what
+    /// attributing a captured connection to its opener depends on.
+    pub procfs_socket_attribution: bool,
+}
+
 /// Mechanism-specific audit evidence for the native Linux sandbox adapter.
 ///
 /// This schema belongs to this backend rather than the generic isolation
@@ -96,6 +126,15 @@ pub struct SeccompEvidence {
     reason = "audit evidence preserves independently measured security results"
 )]
 pub struct NativeLinuxSandboxAuditEvidence {
+    /// Which in-sandbox mechanism the rest of this evidence was measured
+    /// against. Absent on the wire means `NativeLinux`, so evidence produced
+    /// before this field existed still validates the way it always did.
+    #[serde(default)]
+    pub mechanism: SandboxMechanism,
+    /// Measurements that only mean anything under gVisor. Left at its default
+    /// for the native Linux mechanism, which ignores it.
+    #[serde(default)]
+    pub gvisor: GvisorEvidence,
     pub capabilities: CapabilityEvidence,
     pub no_new_privileges: bool,
     pub sandbox_dumpable: bool,
@@ -115,70 +154,95 @@ pub struct NativeLinuxSandboxAuditEvidence {
 impl NativeLinuxSandboxAuditEvidence {
     /// Validate the complete mechanism-specific posture required by this backend.
     pub fn validate(&self) -> Result<(), BackendError> {
-        let complete = self.capabilities.is_empty()
+        let complete = self.privilege_floor()
+            && !self.native_architecture.is_empty()
+            && !self.kernel_release.is_empty()
+            && self.dns_and_tcp_round_trips()
+            && match self.mechanism {
+                SandboxMechanism::NativeLinux => {
+                    self.seccomp.new_listener
+                        && self.seccomp.notification_round_trip
+                        && self.seccomp.id_validation
+                        && self.seccomp.addfd_send
+                        && self.seccomp.retained_socket_operation
+                        && self.seccomp.proc_fd_identity
+                        && self.seccomp.task_memory_read
+                        && self.seccomp.task_memory_write
+                        && (self.seccomp.cancellation || self.seccomp.task_memory_writes_disabled)
+                        && self.landlock_abi >= 3
+                        && self.landlock_allow_deny
+                }
+                SandboxMechanism::Gvisor => {
+                    self.gvisor.redirect_capture && self.gvisor.procfs_socket_attribution
+                }
+            };
+        if complete {
+            Ok(())
+        } else {
+            Err(BackendError::Confirm(format!(
+                "{:?} sandbox audit evidence is incomplete",
+                self.mechanism
+            )))
+        }
+    }
+
+    fn privilege_floor(&self) -> bool {
+        self.capabilities.is_empty()
             && self.no_new_privileges
             && !self.sandbox_dumpable
             && self.child_dumpable
             && self.core_limit_zero
-            && !self.native_architecture.is_empty()
-            && !self.kernel_release.is_empty()
-            && self.seccomp.new_listener
-            && self.seccomp.notification_round_trip
-            && self.seccomp.id_validation
-            && self.seccomp.addfd_send
-            && self.seccomp.retained_socket_operation
-            && self.seccomp.proc_fd_identity
-            && self.seccomp.task_memory_read
-            && self.seccomp.task_memory_write
-            && (self.seccomp.cancellation || self.seccomp.task_memory_writes_disabled)
-            && self.landlock_abi >= 3
-            && self.landlock_allow_deny
-            && self.udp_dns_round_trip
+    }
+
+    fn dns_and_tcp_round_trips(&self) -> bool {
+        self.udp_dns_round_trip
             && self.tcp_dns_round_trip
             && self.tcp_allow_round_trip
-            && self.tcp_deny_round_trip;
-        if complete {
-            Ok(())
-        } else {
-            Err(BackendError::Confirm(
-                "native Linux sandbox audit evidence is incomplete".to_string(),
-            ))
-        }
+            && self.tcp_deny_round_trip
     }
 
     /// Project backend measurements into the common property contract.
     #[must_use]
     pub fn properties(&self) -> BoundaryProperties {
-        BoundaryProperties {
-            filesystem_confinement: EnforcedProperty::new(
-                self.landlock_abi >= 3 && self.landlock_allow_deny,
-                format!("landlock-v{}", self.landlock_abi),
-            ),
-            egress_interception: EnforcedProperty::new(
-                self.seccomp.new_listener
-                    && self.seccomp.notification_round_trip
-                    && self.seccomp.addfd_send
-                    && self.udp_dns_round_trip
-                    && self.tcp_dns_round_trip
-                    && self.tcp_allow_round_trip
-                    && self.tcp_deny_round_trip,
-                "seccomp-notify",
-            ),
-            request_attribution: EnforcedProperty::new(
-                self.seccomp.id_validation
-                    && self.seccomp.proc_fd_identity
-                    && self.seccomp.task_memory_read
-                    && self.seccomp.task_memory_write,
-                "seccomp-notify-procfs",
-            ),
-            privilege_floor: EnforcedProperty::new(
-                self.capabilities.is_empty()
-                    && self.no_new_privileges
-                    && !self.sandbox_dumpable
-                    && self.child_dumpable
-                    && self.core_limit_zero,
-                "linux-capability-free",
-            ),
+        let privilege_floor = EnforcedProperty::new(self.privilege_floor(), "linux-capability-free");
+        match self.mechanism {
+            SandboxMechanism::NativeLinux => BoundaryProperties {
+                filesystem_confinement: EnforcedProperty::new(
+                    self.landlock_abi >= 3 && self.landlock_allow_deny,
+                    format!("landlock-v{}", self.landlock_abi),
+                ),
+                egress_interception: EnforcedProperty::new(
+                    self.seccomp.new_listener
+                        && self.seccomp.notification_round_trip
+                        && self.seccomp.addfd_send
+                        && self.dns_and_tcp_round_trips(),
+                    "seccomp-notify",
+                ),
+                request_attribution: EnforcedProperty::new(
+                    self.seccomp.id_validation
+                        && self.seccomp.proc_fd_identity
+                        && self.seccomp.task_memory_read
+                        && self.seccomp.task_memory_write,
+                    "seccomp-notify-procfs",
+                ),
+                privilege_floor,
+            },
+            // Filesystem confinement is the sentry's, and the sandbox cannot
+            // measure the box it runs in. The enforcement owner attests it
+            // through the descriptor, and `validate` on the host side refuses
+            // a descriptor that does not.
+            SandboxMechanism::Gvisor => BoundaryProperties {
+                filesystem_confinement: EnforcedProperty::new(true, "gvisor-sentry-vfs"),
+                egress_interception: EnforcedProperty::new(
+                    self.gvisor.redirect_capture && self.dns_and_tcp_round_trips(),
+                    "netfilter-redirect",
+                ),
+                request_attribution: EnforcedProperty::new(
+                    self.gvisor.procfs_socket_attribution,
+                    "procfs-socket-inode",
+                ),
+                privilege_floor,
+            },
         }
     }
 }

@@ -61,7 +61,8 @@ mod linux {
     use openshell_sandbox_backend::boundary_protocol::{
         AgentSpecWire, BinaryIdentityWire, BoundaryConfig, BoundaryErrorKind,
         BoundaryListener as BoundaryListenerConfig, DnsQueryResultWire, ExecSpecWire,
-        ExitStatusWire, MediationTimingWire, NativeLinuxSandboxAuditEvidence, OutputWindowWire,
+        ExitStatusWire, GvisorEvidence, MediationTimingWire, NativeLinuxSandboxAuditEvidence,
+        OutputWindowWire, SandboxMechanism,
         ProcessKindWire, ProcessSnapshotWire, Request, RequestEnvelope, Response, ResponseEnvelope,
         STREAM_EXIT, STREAM_NETWORK_DECISION, STREAM_STDERR, STREAM_STDIN, STREAM_STDIN_CLOSED,
         STREAM_STDOUT, SandboxPolicyWire, SessionSnapshotWire, SignalWire, encode_frame,
@@ -2369,7 +2370,21 @@ mod linux {
             // SAFETY: successful getrlimit initialized the value.
             let core_limit = unsafe { core_limit.assume_init() };
             let (native_architecture, kernel_release) = uname_values()?;
+            let redirect_capture = self.network_broker.redirect_capture();
             let audit = NativeLinuxSandboxAuditEvidence {
+                mechanism: if redirect_capture {
+                    SandboxMechanism::Gvisor
+                } else {
+                    SandboxMechanism::NativeLinux
+                },
+                gvisor: GvisorEvidence {
+                    redirect_capture,
+                    // Read rather than assumed: attributing a captured
+                    // connection to its opener walks both of these, so a
+                    // runtime that hides either cannot claim attribution.
+                    procfs_socket_attribution: std::fs::read_to_string("/proc/net/tcp").is_ok()
+                        && std::fs::read_dir("/proc/self/fd").is_ok(),
+                },
                 capabilities,
                 no_new_privileges,
                 sandbox_dumpable,

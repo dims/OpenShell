@@ -2600,6 +2600,8 @@ mod tests {
 
     fn test_confirmation() -> openshell_isolation_interface::contract::BoundaryConfirmation {
         let audit = crate::boundary_protocol::NativeLinuxSandboxAuditEvidence {
+            mechanism: crate::boundary_protocol::SandboxMechanism::NativeLinux,
+            gvisor: crate::boundary_protocol::GvisorEvidence::default(),
             capabilities: crate::boundary_protocol::CapabilityEvidence {
                 inheritable: 0,
                 permitted: 0,

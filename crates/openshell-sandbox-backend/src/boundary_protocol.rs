@@ -1450,6 +1450,8 @@ mod tests {
 
     fn complete_audit_evidence() -> NativeLinuxSandboxAuditEvidence {
         NativeLinuxSandboxAuditEvidence {
+            mechanism: SandboxMechanism::NativeLinux,
+            gvisor: GvisorEvidence::default(),
             capabilities: CapabilityEvidence {
                 inheritable: 0,
                 permitted: 0,

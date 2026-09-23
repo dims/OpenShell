@@ -54,6 +54,71 @@ pub fn installed_socket_inodes_excluding(
     Ok(inodes)
 }
 
+/// Find the process holding the TCP socket bound to `local`.
+///
+/// For egress capture that has no calling thread to ask. A netfilter redirect
+/// delivers a connection, not a notification, so the only handle on the opener
+/// is its source address: `/proc/net/tcp` maps that to a socket inode, and a
+/// scan of `/proc/<pid>/fd` maps the inode to a holder.
+///
+/// This is weaker than a notification TID and callers must treat it as such.
+/// It is a snapshot taken after the fact: a workload that closes the socket
+/// first cannot be named at all, and a socket shared across a fork resolves to
+/// whichever holder is found first. Failure is reported, never guessed.
+pub fn pid_owning_local_tcp(local: std::net::SocketAddrV4) -> io::Result<u32> {
+    // /proc/net/tcp prints the address as the native u32 behind the big-endian
+    // octets, and the port in big-endian: 127.0.0.1:8080 is "0100007F:1F90".
+    let needle = format!(
+        "{:08X}:{:04X}",
+        u32::from_le_bytes(local.ip().octets()),
+        local.port()
+    );
+    let table = fs::read_to_string("/proc/net/tcp")?;
+    let inode = table
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let local_address = fields.nth(1)?;
+            if local_address != needle {
+                return None;
+            }
+            fields.nth(7)?.parse::<u64>().ok()
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no /proc/net/tcp entry for {local}"),
+            )
+        })?;
+
+    for process in fs::read_dir("/proc")? {
+        let Ok(process) = process else { continue };
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(descriptors) = fs::read_dir(process.path().join("fd")) else {
+            continue;
+        };
+        for descriptor in descriptors.flatten() {
+            let Ok(target) = fs::read_link(descriptor.path()) else {
+                continue;
+            };
+            if target.to_str() == Some(&format!("socket:[{inode}]")) {
+                return Ok(pid);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("no process holds socket inode {inode}"),
+    ))
+}
+
 /// Return the socket inode currently installed at `fd` in `tid`'s descriptor
 /// table.
 ///

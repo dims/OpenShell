@@ -367,7 +367,7 @@ impl NetworkBroker {
         let accept_monitor = Arc::new(crate::accept_interrupt::AcceptMonitor::start(|_| false)?);
         let (pending_tx, pending_rx) = mpsc::channel(OPEN_QUEUE_CAPACITY);
         let (pending_dns_tx, pending_dns_rx) = mpsc::channel(DNS_QUEUE_CAPACITY);
-        start_redirect_acceptor(pending_tx)?;
+        start_redirect_acceptor(pending_tx, ProcfsIdentityResolver::for_pid_namespace())?;
         // The relay threads own the bound sockets, so dropping this handle does
         // not stop them.
         let dns_relay = start_dns_relay(DNS_RELAY_ADDRESS, pending_dns_tx)?;
@@ -454,7 +454,10 @@ fn original_destination(stream: &TcpStream) -> io::Result<SocketAddr> {
 /// `connect(2)`; a denial closes an open connection rather than failing the
 /// call. The workload learns the difference, and the packets still never
 /// leave, because the REDIRECT rule is paired with a default-deny fence.
-fn start_redirect_acceptor(pending: mpsc::Sender<PendingTcpOpen>) -> io::Result<()> {
+fn start_redirect_acceptor(
+    pending: mpsc::Sender<PendingTcpOpen>,
+    identity_resolver: ProcfsIdentityResolver,
+) -> io::Result<()> {
     // AF_INET, deliberately not dual stack. gVisor resolves SO_ORIGINAL_DST
     // through conntrack keyed on the protocol the *socket* was created with,
     // so an accepted IPv4 connection on an AF_INET6 listener misses the entry
@@ -468,8 +471,8 @@ fn start_redirect_acceptor(pending: mpsc::Sender<PendingTcpOpen>) -> io::Result<
         .spawn(move || {
             loop {
                 let accepted_at = Instant::now();
-                let stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
+                let (stream, source) = match listener.accept() {
+                    Ok(accepted) => accepted,
                     Err(error) => {
                         tracing::warn!(%error, "redirected connection accept failed");
                         continue;
@@ -484,14 +487,26 @@ fn start_redirect_acceptor(pending: mpsc::Sender<PendingTcpOpen>) -> io::Result<
                         continue;
                     }
                 };
+                // The opener is found from its source address rather than from
+                // a calling thread, so a workload that closed the socket first
+                // cannot be named. That is reported, not guessed.
+                let identity = match source {
+                    SocketAddr::V4(source) => {
+                        openshell_isolation_interface::linux::proc_fd::pid_owning_local_tcp(source)
+                            .map_err(|error| {
+                                ResolveError::Failed(format!(
+                                    "resolve opener of redirected connection from {source}: {error}"
+                                ))
+                            })
+                            .and_then(|pid| identity_resolver.resolve(pid))
+                    }
+                    SocketAddr::V6(source) => Err(ResolveError::Failed(format!(
+                        "redirected connection from unexpected IPv6 source {source}"
+                    ))),
+                };
                 let open = PendingTcpOpen {
                     destination,
-                    // A 4-tuple does not name a process. The notification path
-                    // resolves identity from the calling thread; nothing here
-                    // can, so it is reported unresolved rather than guessed.
-                    identity: Err(ResolveError::Failed(
-                        "redirected connections carry no calling-thread identity".to_string(),
-                    )),
+                    identity,
                     socket: NetworkSocketMetadata {
                         socket_cookie: 0,
                         nonblocking: false,

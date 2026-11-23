@@ -68,6 +68,12 @@ The program runs only this suite: passing it means a gateway meets the
 conformance contract below. The machine that runs it must be reachable from
 sandboxes as `host.openshell.internal`, which rules out a gateway on a remote
 Kubernetes cluster ([#5409](https://github.com/ai-openshell/openshell/issues/5409)).
+`credential-gating` does not need that with `OPENSHELL_TEST_UPSTREAM=sandbox`:
+each test then starts its [upstream server](../../support/upstream-server/server.py)
+in a sandbox of its own, exposes it as gateway services, and reads what arrived
+upstream through the client's sandbox. That needs a supervisor that lets a
+sandbox reach a gateway service by its published name, and a gateway with
+`enable_gateway_service_routing` on.
 Feature and driver suites are not part of it. The
 [testkit README](../../testkit/README.md#test-programs) describes the commands
 and exit codes. `tasks/scripts/check-conformance-program.sh` checks that it

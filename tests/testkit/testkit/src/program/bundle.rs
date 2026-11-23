@@ -43,8 +43,10 @@ pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
 const SCHEMA_VERSION: u32 = 1;
 /// How long reading the gateway may take before the run goes on without it.
 const FACTS_TIMEOUT: Duration = Duration::from_secs(30);
-/// Settings that choose what the tests run, recorded when set.
-const RECORDED_ENV: [&str; 2] = [BASE_IMAGE_ENV, PYTHON_IMAGE_ENV];
+/// Settings that choose what the tests run or where their upstream servers
+/// run, recorded when set. The suites that read the upstream one depend on
+/// this crate, so it is named here.
+const RECORDED_ENV: [&str; 3] = [BASE_IMAGE_ENV, PYTHON_IMAGE_ENV, "OPENSHELL_TEST_UPSTREAM"];
 
 /// `run.json`: one run of the program against one gateway.
 #[derive(Debug, Serialize)]

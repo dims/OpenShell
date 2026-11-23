@@ -167,6 +167,11 @@ impl Cli {
         &self.gateway
     }
 
+    /// The CLI program that is run.
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+
     /// Point `process` at the CLI's gateway and workspace, as every CLI
     /// invocation is. Use it for a program that runs the CLI itself, such as
     /// `ssh` with the `ProxyCommand` from `sandbox ssh-config`.

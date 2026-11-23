@@ -137,7 +137,7 @@ mod unix {
         },
     ];
 
-    pub static CHECKS: [Test; 14] = [
+    pub static CHECKS: [Test; 15] = [
         check("nextest_interface", || {
             Box::pin(async { nextest_interface() })
         }),
@@ -148,6 +148,9 @@ mod unix {
             Box::pin(async { run_reports_every_outcome() })
         }),
         check("run_exit_codes", || Box::pin(async { run_exit_codes() })),
+        check("run_writes_a_result_bundle", || {
+            Box::pin(async { run_writes_a_result_bundle() })
+        }),
         check("a_program_without_tests_fails", || {
             Box::pin(async { a_program_without_tests_fails() })
         }),
@@ -301,6 +304,113 @@ mod unix {
         ] {
             assert!(xml.contains(expected), "missing {expected} in\n{xml}");
         }
+    }
+
+    /// `--output-dir` writes `run.json`, `junit.xml` and `SHA256SUMS`. The
+    /// two result files carry one run ID, and a gateway that does not
+    /// answer is recorded without failing the run.
+    fn run_writes_a_result_bundle() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bundle = dir.path().join("results");
+        let run = output(without_gateway(
+            program(
+                "fixtures",
+                &[
+                    "run",
+                    "passes",
+                    "fails",
+                    "ignored",
+                    "--output-dir",
+                    bundle.to_str().expect("utf-8 path"),
+                ],
+            ),
+            dir.path(),
+        ));
+        assert_eq!(run.status.code(), Some(1));
+        assert!(stderr(&run).contains("wrote the result bundle to"));
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(bundle.join("run.json")).expect("run.json"))
+                .expect("run.json is JSON");
+        assert_eq!(manifest["schema_version"], 1);
+        assert_eq!(manifest["exit_code"], 1);
+        assert_eq!(
+            manifest["totals"],
+            serde_json::json!({
+                "selected": 3,
+                "passed": 1,
+                "failed": 1,
+                "errors": 0,
+                "skipped": 1,
+                "unsupported": 0,
+                "not_run": 0,
+            })
+        );
+        assert_eq!(
+            manifest["selection"]["filters"],
+            serde_json::json!(["passes", "fails", "ignored"])
+        );
+        let outcomes: std::collections::BTreeMap<&str, &str> = manifest["tests"]
+            .as_array()
+            .expect("tests")
+            .iter()
+            .map(|test| {
+                (
+                    test["name"].as_str().expect("name"),
+                    test["outcome"].as_str().expect("outcome"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            std::collections::BTreeMap::from([
+                ("fixture::fails", "failed"),
+                ("fixture::ignored", "skipped"),
+                ("fixture::passes", "passed"),
+            ])
+        );
+        assert_eq!(
+            manifest["runner"]["sha256"]
+                .as_str()
+                .expect("program digest")
+                .len(),
+            64
+        );
+        // Nothing answers at the endpoint: the reason is kept, and the facts
+        // that needed an answer are left out.
+        let gateway = &manifest["gateway"];
+        assert!(
+            gateway["endpoint"]
+                .as_str()
+                .expect("endpoint")
+                .starts_with("http://127.0.0.1:")
+        );
+        assert!(gateway.get("version").is_none(), "{gateway}");
+        assert!(
+            !gateway["errors"].as_array().expect("errors").is_empty(),
+            "{gateway}"
+        );
+        assert!(manifest["cli"].get("version").is_none());
+
+        let run_id = manifest["run_id"].as_str().expect("run id");
+        assert!(stderr(&run).contains(&format!("run {run_id}")));
+        let xml = std::fs::read_to_string(bundle.join("junit.xml")).expect("junit report");
+        assert!(
+            xml.contains(&format!(r#"<property name="run-id" value="{run_id}"/>"#)),
+            "{xml}"
+        );
+
+        let sums = std::fs::read_to_string(bundle.join("SHA256SUMS")).expect("checksums");
+        let expected: String = ["junit.xml", "run.json"]
+            .into_iter()
+            .map(|name| {
+                let bytes = std::fs::read(bundle.join(name)).expect("bundle file");
+                let digest = openshell_crypto::sha256(&bytes).expect("sha256");
+                let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+                format!("{hex}  {name}\n")
+            })
+            .collect();
+        assert_eq!(sums, expected);
     }
 
     fn run_exit_codes() {

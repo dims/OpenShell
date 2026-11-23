@@ -138,6 +138,15 @@ impl Gateway {
         )
     }
 
+    /// How the gateway is reached: `mtls`, `tls` or `plaintext`.
+    pub fn auth(&self) -> &'static str {
+        match (&self.mtls_dir, self.endpoint.starts_with("https://")) {
+            (Some(_), _) => "mtls",
+            (None, true) => "tls",
+            (None, false) => "plaintext",
+        }
+    }
+
     /// Connect to the gateway.
     ///
     /// The registered gateway's CA and client certificate are read from its

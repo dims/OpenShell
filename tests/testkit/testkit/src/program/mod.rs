@@ -17,7 +17,8 @@
 //! - `list [FILTER]...` prints each test's name and description.
 //! - `ready [--timeout SECS]` waits for the gateway, as `testkit-ready` does.
 //! - `run [FILTER]...` runs tests one at a time, each in its own process with
-//!   a timeout, and can write a `JUnit` report. Unix only.
+//!   a timeout, and can write a `JUnit` report or a result bundle (see
+//!   `bundle.rs`). Unix only.
 //!
 //! Any other arguments are libtest's, so the program also works as a
 //! `harness = false` test target under `cargo test` and nextest: it answers
@@ -29,6 +30,8 @@
 //! yet (see `unsupported.rs`). They are reported as ignored under every
 //! interface, and a forced run of one fails.
 
+#[cfg(unix)]
+mod bundle;
 #[cfg(unix)]
 mod capture;
 #[cfg(unix)]
@@ -148,6 +151,10 @@ enum Command {
         /// Write a JUnit report here.
         #[arg(long, value_name = "PATH")]
         junit: Option<PathBuf>,
+        /// Write the result bundle into this directory: run.json, junit.xml
+        /// and SHA256SUMS.
+        #[arg(long, value_name = "DIR")]
+        output_dir: Option<PathBuf>,
     },
 }
 
@@ -180,6 +187,7 @@ fn command(
             timeout,
             grace,
             junit,
+            output_dir,
         } => run(
             program,
             tests,
@@ -191,6 +199,7 @@ fn command(
             timeout,
             grace,
             junit,
+            output_dir,
         ),
     }
 }
@@ -203,6 +212,7 @@ fn run(
     timeout: Duration,
     grace: Duration,
     junit: Option<PathBuf>,
+    output_dir: Option<PathBuf>,
 ) -> ExitCode {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -216,6 +226,7 @@ fn run(
         timeout,
         grace,
         junit,
+        output_dir,
     };
     announce(&options.selection.unsupported);
     supervisor::run(program, &exe, tests, &options)
@@ -229,6 +240,7 @@ fn run(
     _timeout: Duration,
     _grace: Duration,
     _junit: Option<PathBuf>,
+    _output_dir: Option<PathBuf>,
 ) -> ExitCode {
     eprintln!(
         "{program}: `run` is only supported on Unix; run the tests with cargo test or nextest"
@@ -383,6 +395,8 @@ mod tests {
             "1.5",
             "--junit",
             "out/junit.xml",
+            "--output-dir",
+            "out/bundle",
         ])
         .unwrap();
         let Command::Run {
@@ -391,6 +405,7 @@ mod tests {
             timeout,
             grace,
             junit,
+            output_dir,
         } = cli.command
         else {
             panic!("not run");
@@ -400,6 +415,7 @@ mod tests {
         assert_eq!(timeout, Duration::from_millis(1500));
         assert_eq!(grace, Duration::from_secs(10));
         assert_eq!(junit.unwrap().to_str(), Some("out/junit.xml"));
+        assert_eq!(output_dir.unwrap().to_str(), Some("out/bundle"));
 
         let Command::Ready { timeout } = Cli::try_parse_from(["p", "ready"]).unwrap().command
         else {

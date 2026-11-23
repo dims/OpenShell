@@ -2409,6 +2409,7 @@ dependencies = [
 name = "openshell-testkit"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "clap",
  "futures",
  "libc",
@@ -2417,6 +2418,7 @@ dependencies = [
  "noyalib",
  "openshell-bootstrap",
  "openshell-core",
+ "openshell-crypto",
  "openshell-policy",
  "openshell-sdk",
  "openshell-testkit-macros",

@@ -4,7 +4,7 @@
 //! The images tests create sandboxes from or build their images on.
 
 /// Overrides [`DEFAULT_BASE_IMAGE`], e.g. with a mirror.
-const BASE_IMAGE_ENV: &str = "OPENSHELL_TEST_BASE_IMAGE";
+pub(crate) const BASE_IMAGE_ENV: &str = "OPENSHELL_TEST_BASE_IMAGE";
 /// OpenShell's built-in default sandbox image. Pulling it needs access to
 /// nvcr.io.
 const DEFAULT_BASE_IMAGE: &str = "nvcr.io/nvidia/base/ubuntu:24.04";
@@ -12,7 +12,7 @@ const DEFAULT_BASE_IMAGE: &str = "nvcr.io/nvidia/base/ubuntu:24.04";
 /// Overrides [`DEFAULT_PYTHON_IMAGE`]. The image must run `python3` from one
 /// of [`PYTHON_BINARIES`]; otherwise policies that allow those paths don't
 /// match it, and its connections are denied.
-const PYTHON_IMAGE_ENV: &str = "OPENSHELL_TEST_PYTHON_IMAGE";
+pub(crate) const PYTHON_IMAGE_ENV: &str = "OPENSHELL_TEST_PYTHON_IMAGE";
 /// The workload image for tests that run `python3`, curl, git or openssl in a
 /// sandbox, built from `e2e/python/Dockerfile.workload`. It isn't published:
 /// the tmachine installers load it into every environment, and

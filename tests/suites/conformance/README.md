@@ -59,6 +59,11 @@ tests/suites/conformance/target/debug/openshell-conformance ready
 tests/suites/conformance/target/debug/openshell-conformance run --junit conformance.xml
 ```
 
+`run --output-dir DIR` writes a result bundle: `run.json`, which records the
+gateway, its compute driver and extensions, the CLI, the program, the
+selection and each result; the JUnit report; and `SHA256SUMS` over both. The
+[testkit README](../../testkit/README.md#result-bundle) describes it.
+
 The program runs only this suite: passing it means a gateway meets the
 conformance contract below. The machine that runs it must be reachable from
 sandboxes as `host.openshell.internal`, which rules out a gateway on a remote

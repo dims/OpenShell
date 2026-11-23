@@ -5,7 +5,8 @@
 //!
 //! One `<testsuite>` per family. Each `<testcase>` is named by the test name,
 //! with the module path as its class name and the description and family as
-//! properties.
+//! properties. In a result bundle each `<testsuite>` also has the run ID as
+//! its `run-id` property, as `run.json` does.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,7 +15,7 @@ use quick_junit::{NonSuccessKind, Property, Report, TestCase, TestCaseStatus, Te
 
 use super::supervisor::{Outcome, TestRun};
 
-pub fn report(program: &str, runs: &[TestRun<'_>]) -> Report {
+pub fn report(program: &str, runs: &[TestRun<'_>], run_id: Option<&str>) -> Report {
     let mut suites: BTreeMap<&str, TestSuite> = BTreeMap::new();
     for run in runs {
         let family = run.test.family();
@@ -24,7 +25,12 @@ pub fn report(program: &str, runs: &[TestRun<'_>]) -> Report {
             .add_test_case(test_case(run));
     }
     let mut report = Report::new(program);
-    report.add_test_suites(suites.into_values());
+    report.add_test_suites(suites.into_values().map(|mut suite| {
+        if let Some(run_id) = run_id {
+            suite.add_property(Property::new("run-id", run_id));
+        }
+        suite
+    }));
     report
 }
 
@@ -126,7 +132,9 @@ mod tests {
                 None,
             ),
         ];
-        let xml = report("openshell-conformance", &runs).to_string().unwrap();
+        let xml = report("openshell-conformance", &runs, None)
+            .to_string()
+            .unwrap();
         for expected in [
             r#"<testsuites name="openshell-conformance" tests="4" skipped="2" failures="1" errors="0">"#,
             r#"<testsuite name="conformance" tests="4" skipped="2" errors="0" failures="1">"#,
@@ -141,5 +149,14 @@ mod tests {
         ] {
             assert!(xml.contains(expected), "missing {expected} in\n{xml}");
         }
+        assert!(!xml.contains("run-id"), "{xml}");
+
+        let xml = report("openshell-conformance", &runs, Some("run12345"))
+            .to_string()
+            .unwrap();
+        assert!(
+            xml.contains(r#"<property name="run-id" value="run12345"/>"#),
+            "{xml}"
+        );
     }
 }

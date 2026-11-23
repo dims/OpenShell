@@ -987,7 +987,7 @@ fn check_sandbox_name(name: &str) {
 }
 
 /// Short, lowercase, and DNS-label safe, so names work on every driver.
-fn generate_run_id() -> String {
+pub(crate) fn generate_run_id() -> String {
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut rng = rand::rng();
     (0..8)

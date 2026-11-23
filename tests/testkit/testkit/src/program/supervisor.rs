@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use super::capture::Capture;
 use super::process::{self, Ended};
-use super::{ERROR_EXIT, FAILED_EXIT, SUPERVISED_ENV, junit};
+use super::{ERROR_EXIT, FAILED_EXIT, SUPERVISED_ENV, bundle, junit};
 use crate::registry::{Disposition, Selection, Test};
 
 /// libtest's exit code when a test failed.
@@ -31,6 +31,8 @@ pub struct Options {
     pub timeout: Duration,
     pub grace: Duration,
     pub junit: Option<PathBuf>,
+    /// Where to write the result bundle (see `bundle.rs`).
+    pub output_dir: Option<PathBuf>,
 }
 
 /// One test's result.
@@ -69,7 +71,7 @@ impl Outcome {
         }
     }
 
-    fn message(&self) -> Option<Cow<'_, str>> {
+    pub(super) fn message(&self) -> Option<Cow<'_, str>> {
         match self {
             Self::Passed | Self::Skipped => None,
             Self::Unsupported(issue) => Some(format!("unsupported: {issue}").into()),
@@ -105,6 +107,15 @@ pub fn run(program: &str, exe: &Path, tests: &[Test], options: &Options) -> Exit
             String::new()
         }
     );
+
+    // What is under test is read before the first test, while it is up.
+    let record = options
+        .output_dir
+        .as_ref()
+        .map(|_| bundle::Start::collect(program, exe, options));
+    if let Some(record) = &record {
+        eprintln!("{program}: run {}", record.run_id());
+    }
 
     let started = Instant::now();
     let selected_count = selected.len();
@@ -147,11 +158,28 @@ pub fn run(program: &str, exe: &Path, tests: &[Test], options: &Options) -> Exit
 
     let not_run = selected_count - runs.len();
     let mut status = summarize(program, &runs, not_run, started.elapsed());
+    let run_id = record.as_ref().map(bundle::Start::run_id);
+    let report = junit::report(program, &runs, run_id);
     if let Some(path) = &options.junit {
-        match junit::write(path, &junit::report(program, &runs)) {
+        match junit::write(path, &report) {
             Ok(()) => eprintln!("{program}: wrote {}", path.display()),
             Err(error) => {
                 eprintln!("{program}: write {}: {error}", path.display());
+                status = ERROR_EXIT;
+            }
+        }
+    }
+    if let (Some(dir), Some(record)) = (&options.output_dir, record) {
+        // The manifest holds the exit code the tests give. A bundle that
+        // cannot be written then fails the run.
+        let manifest = record.finish(&runs, not_run, status);
+        match bundle::write(dir, &manifest, &report) {
+            Ok(()) => eprintln!("{program}: wrote the result bundle to {}", dir.display()),
+            Err(error) => {
+                eprintln!(
+                    "{program}: write the result bundle to {}: {error}",
+                    dir.display()
+                );
                 status = ERROR_EXIT;
             }
         }

@@ -17,9 +17,11 @@ name = "testkit"
 [dependencies]
 openshell-bootstrap = { path = "../../../crates/openshell-bootstrap" }
 openshell-core = { path = "../../../crates/openshell-core", default-features = false }
+openshell-crypto = { path = "../../../crates/openshell-crypto" }
 openshell-policy = { path = "../../../crates/openshell-policy" }
 openshell-sdk = { path = "../../../crates/openshell-sdk" }
 openshell-testkit-macros = { path = "../testkit-macros" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 libtest-mimic = "0.8"

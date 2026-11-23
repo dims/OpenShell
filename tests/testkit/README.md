@@ -238,6 +238,7 @@ A filter selects tests whose name contains it. `run` also takes:
 - `--timeout SECS` (default 900): a test that runs longer gets SIGTERM, then
   SIGKILL after `--grace SECS` (default 10).
 - `--junit PATH`: writes a JUnit report with one test suite per family.
+- `--output-dir DIR`: writes a [result bundle](#result-bundle) into `DIR`.
 
 Each test runs in its own process group. When the test's process exits, `run`
 kills anything left in the group, such as CLI processes the test started.
@@ -264,6 +265,22 @@ name, as in nextest. Its family, which groups tests in the JUnit report, is
 the first directory under the last `suites` directory in the crate's path:
 `conformance` for `tests/suites/conformance`, `features` for
 `tests/suites/features/<name>`.
+
+### Result bundle
+
+`run --output-dir DIR` writes three files into `DIR`:
+
+| File | Contents |
+|---|---|
+| `run.json` | The run ID, the start and end times, the program (version, SHA-256, limits), the gateway (endpoint, auth, version, compute drivers and extensions), the CLI version, the selection, the totals, the exit code the results give, and each test's result. |
+| `junit.xml` | The report `--junit` writes, with the run ID as the `run-id` property of each test suite. |
+| `SHA256SUMS` | The SHA-256 of the other two files, for `sha256sum --check`. |
+
+The gateway and the CLI are read before the first test. A fact that cannot be
+read is listed under `errors` in its section and does not fail the run. The
+compute drivers and extensions come from `GetGatewayInfo`, which needs the
+platform administrator role. `schema_version` changes when a field changes
+meaning.
 
 ### Unsupported tests
 

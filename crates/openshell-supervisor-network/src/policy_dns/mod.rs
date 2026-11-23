@@ -233,6 +233,9 @@ impl<R: TrustedResolver> PolicyDnsService<R> {
         // The trusted resolver is invoked only after the immutable snapshot
         // proved policy eligibility. It never consults sandbox resolver state.
         let endpoint_context = eligible_endpoint_context(&eligible);
+        // Prototype: the name of a service that the gateway exposes lives at
+        // the gateway, so the trusted answer is the gateway's own address.
+        let gateway_route = crate::gateway_service::route_for(normalized_name.as_str());
         let trusted_answer = if is_host_gateway_alias(normalized_name.as_str()) {
             let address = self
                 .trusted_host_gateway
@@ -242,8 +245,21 @@ impl<R: TrustedResolver> PolicyDnsService<R> {
                 addresses: vec![address],
                 ttl: MAX_MAPPING_TTL,
             }
+        } else if let Some(address) = gateway_route.and_then(|route| route.address()) {
+            if !family.accepts(address) {
+                return Err(PolicyDnsError::NoValidAddress);
+            }
+            TrustedAnswer {
+                addresses: vec![address],
+                ttl: MAX_MAPPING_TTL,
+            }
         } else {
-            match self.resolver.resolve(&normalized_name, family).await {
+            let gateway_name = gateway_route
+                .map(|route| NormalizedName::parse(route.host()))
+                .transpose()
+                .map_err(|_| PolicyDnsError::InvalidName)?;
+            let query_name = gateway_name.as_ref().unwrap_or(&normalized_name);
+            match self.resolver.resolve(query_name, family).await {
                 Ok(answer) => answer,
                 Err(error) => {
                     emit_dns_failure(

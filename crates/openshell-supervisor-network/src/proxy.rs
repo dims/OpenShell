@@ -4745,6 +4745,11 @@ async fn dial_upstream(
     port: u16,
     addrs: &[SocketAddr],
 ) -> std::io::Result<upstream_proxy::PrefixedStream> {
+    // Prototype: the name of a gateway service is dialed at the gateway's port.
+    let service_target = crate::gateway_service::dial_target(host_lc, addrs);
+    let (port, addrs) = service_target
+        .as_ref()
+        .map_or((port, addrs), |(port, addrs)| (*port, addrs.as_slice()));
     if let Some(cfg) = upstream_proxy.as_ref() {
         return match cfg.decision(host_lc, port, addrs) {
             upstream_proxy::ProxyDecision::Proxy(endpoint) => {
@@ -4787,6 +4792,11 @@ async fn dial_transparent_upstream(
     port: u16,
     addrs: &[SocketAddr],
 ) -> std::io::Result<upstream_proxy::PrefixedStream> {
+    // Prototype: the name of a gateway service is dialed at the gateway's port.
+    let service_target = crate::gateway_service::dial_target(host_lc, addrs);
+    let (port, addrs) = service_target
+        .as_ref()
+        .map_or((port, addrs), |(port, addrs)| (*port, addrs.as_slice()));
     if let Some(cfg) = upstream_proxy.as_ref() {
         return match cfg.decision(host_lc, port, addrs) {
             upstream_proxy::ProxyDecision::Proxy(endpoint) => {
